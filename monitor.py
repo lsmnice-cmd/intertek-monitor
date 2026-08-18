@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 인터텍 코리아 공지 모니터 - GitHub Actions 버전 v1.1
+[v1.3] 기준점 등록 시 최근 3일 글을 전부 알림 (교체 후 첫 실행에서 1회 자동 리셋되어
+       18일 글부터 상세 요약과 함께 발송됨)
+[v1.2] 수동 실행(Run workflow) 시 "작동 확인" 테스트 텔레그램 발송 + 근무시간 무시하고 1회 확인
 [v1.1] 오류 내성: 연결 실패/Secrets 미등록 시 죽지 않고 원인을 로그에 출력
 - 새 글 감지 → 상세 요약 → 텔레그램 / [모집완료] 감지
 - 상태(seen.json)는 저장소에 커밋되어 유지됨 (워크플로가 처리)
@@ -29,6 +32,8 @@ KST = timezone(timedelta(hours=9))
 DATE_RE = re.compile(r"(\d{2,4})[.\-/](\d{1,2})[.\-/](\d{1,2})")
 IDX_RE = re.compile(r"idx=(\d+)")
 DONE_RE = re.compile(r"모집\s*완료|마감")
+
+BASELINE_RECENT_DAYS = 3   # 기준점 등록 시 최근 며칠 글까지 알림으로 보낼지
 
 WORK_DAYS = (0, 1, 2, 3, 4)
 WORK_START_HOUR = 8
@@ -276,8 +281,21 @@ def fetch_posts():
 
 
 def main():
-    # v2: 월~금 08~18시에만 동작
-    if not in_work_hours():
+    # v1.2: Actions 화면에서 수동 실행(Run workflow)하면 테스트 메시지 발송
+    manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    if manual:
+        log("수동 실행 - 작동 확인 메시지 발송")
+        try:
+            send_telegram(
+                "✅ 인터텍 깃허브 모니터 작동 확인\n\n"
+                "수동 실행 테스트입니다. 연결과 텔레그램이 정상입니다.\n"
+                "새 공지가 올라오면 이 방으로 자동 알림이 옵니다.\n"
+                "(평일 08~18시, 약 10분 간격 확인)")
+        except Exception as e:
+            log(f"⚠ 테스트 메시지 발송 실패: {e}")
+
+    # 월~금 08~18시에만 동작 (수동 실행은 시간 무관하게 1회 확인)
+    if not manual and not in_work_hours():
         log("근무시간 외 (월~금 08~18시만 확인) - 건너뜀")
         return
 
@@ -318,12 +336,19 @@ def main():
     today = datetime.now(KST).strftime("%Y-%m-%d")
     known = state.get("posts", {})
 
+    # v1.3: 1회 자동 리셋 - 기준점을 다시 잡으면서 최근 글을 알림으로 발송
+    if state.get("baseline_v") != 2:
+        known = {}
+        state["baseline_v"] = 2
+
     if not known:
+        cutoff = (datetime.now(KST) - timedelta(days=BASELINE_RECENT_DAYS)
+                  ).strftime("%Y-%m-%d")
         for p in posts:
-            if p.get("date") == today:
-                notify("📢 인터텍 오늘 공지", p)
+            if p.get("date") and p["date"] >= cutoff:
+                notify("📢 인터텍 최근 공지", p)
         known = {p["key"]: p["title"] for p in posts}
-        log(f"기준점 등록 — {len(posts)}건 (오늘 글은 알림 발송)")
+        log(f"기준점 등록 — {len(posts)}건 (최근 {BASELINE_RECENT_DAYS}일 글은 알림 발송)")
     else:
         changed = False
         for p in posts:
