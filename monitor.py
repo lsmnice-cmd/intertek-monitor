@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 인터텍 코리아 공지 모니터 - GitHub Actions 버전 v1.1
+[v1.4] 빠진 상수(MAX_MSG_LEN) 보강 - 알림 메시지 생성 오류 수정, 기준점 1회 재리셋
 [v1.3] 기준점 등록 시 최근 3일 글을 전부 알림 (교체 후 첫 실행에서 1회 자동 리셋되어
        18일 글부터 상세 요약과 함께 발송됨)
 [v1.2] 수동 실행(Run workflow) 시 "작동 확인" 테스트 텔레그램 발송 + 근무시간 무시하고 1회 확인
@@ -15,6 +16,7 @@ import os
 import re
 import sys
 import json
+import hashlib
 import traceback
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
@@ -34,6 +36,7 @@ IDX_RE = re.compile(r"idx=(\d+)")
 DONE_RE = re.compile(r"모집\s*완료|마감")
 
 BASELINE_RECENT_DAYS = 3   # 기준점 등록 시 최근 며칠 글까지 알림으로 보낼지
+MAX_MSG_LEN = 3500         # 텔레그램 메시지 최대 길이
 
 WORK_DAYS = (0, 1, 2, 3, 4)
 WORK_START_HOUR = 8
@@ -337,9 +340,9 @@ def main():
     known = state.get("posts", {})
 
     # v1.3: 1회 자동 리셋 - 기준점을 다시 잡으면서 최근 글을 알림으로 발송
-    if state.get("baseline_v") != 2:
+    if state.get("baseline_v") != 3:
         known = {}
-        state["baseline_v"] = 2
+        state["baseline_v"] = 3
 
     if not known:
         cutoff = (datetime.now(KST) - timedelta(days=BASELINE_RECENT_DAYS)
