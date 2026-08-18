@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-인터텍 코리아 공지 모니터 - GitHub Actions 버전 v1.0
+인터텍 코리아 공지 모니터 - GitHub Actions 버전 v1.1
+[v1.1] 오류 내성: 연결 실패/Secrets 미등록 시 죽지 않고 원인을 로그에 출력
 - 새 글 감지 → 상세 요약 → 텔레그램 / [모집완료] 감지
 - 상태(seen.json)는 저장소에 커밋되어 유지됨 (워크플로가 처리)
 - BOT_TOKEN / CHAT_ID 는 GitHub Secrets 환경변수에서 읽음
@@ -53,9 +54,15 @@ def log(msg):
 def get_html(url):
     """GitHub 러너에서 requests로 읽기 → (html, blocked)"""
     import requests
-    res = requests.get(url, headers=HEADERS, timeout=30)
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=30)
+    except requests.RequestException as e:
+        log(f"❌ 연결 실패: {type(e).__name__}: {e}")
+        log("   (인터텍이 해외 IP 접속을 막는 경우 GitHub 서버에서는 연결이 안 됩니다)")
+        return None, True
     res.encoding = res.apparent_encoding
     html = res.text
+    log(f"응답: HTTP {res.status_code}, {len(html)}자")
     if res.status_code in (403, 429, 503):
         return html, True
     return html, False
@@ -222,16 +229,26 @@ def build_message(prefix, post, detail):
 
 def send_telegram(text):
     import requests
+    if not BOT_TOKEN or not CHAT_ID:
+        log("❌ 텔레그램 미발송: Secrets(BOT_TOKEN/CHAT_ID)가 등록되지 않았습니다")
+        log("   저장소 Settings → Secrets and variables → Actions에서 등록하세요")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True}
     r = requests.post(url, data=payload, timeout=30)
+    if r.status_code != 200:
+        log(f"❌ 텔레그램 발송 실패: HTTP {r.status_code} - {r.text[:200]}")
+        log("   (401=봇토큰 오류, 400=채팅ID 오류/봇이 방에 없음)")
     r.raise_for_status()
 
 
 def notify(prefix, post):
-    detail = fetch_detail(post["link"])
-    send_telegram(build_message(prefix, post, detail))
-    log(f"알림 발송 [{prefix}]: {post['title']}")
+    try:
+        detail = fetch_detail(post["link"])
+        send_telegram(build_message(prefix, post, detail))
+        log(f"알림 발송 [{prefix}]: {post['title']}")
+    except Exception as e:
+        log(f"⚠ 알림 발송 실패({post['title']}): {e}")
 
 
 def load_state():
@@ -248,7 +265,7 @@ def save_state(state):
 
 def fetch_posts():
     html, hard_block = get_html(TARGET_URL)
-    if hard_block:
+    if hard_block or html is None:
         return [], True
     posts = parse_posts(html)
     if posts:
